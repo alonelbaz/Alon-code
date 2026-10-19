@@ -1,26 +1,15 @@
-import socket
+from my_socket import MyServerSocket
 
 HOST = '127.0.0.1'
 PORT = 5000
 
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server_socket.bind((HOST, PORT))
-server_socket.listen(1)
-
-print(f"Server listening on {HOST}:{PORT}")
-
-conn, addr = server_socket.accept()
-print(f"Connected by {addr}")
+server = MyServerSocket(HOST, PORT)
+server.accept()
 
 while True:
-    data = conn.recv(1024)
-    if not data:
+    message = server.receive()
+    if not message:
         break
-    message = data.decode('utf-8')
-    print(f"Received: {message}")
-    response = f"Server got: {message}"
-    conn.sendall(response.encode('utf-8'))
+    server.send(f"Server got: {message}")
 
-conn.close()
-server_socket.close()
-print("Server closed.")
+server.close()
