@@ -1,92 +1,139 @@
-import socket
+import ctypes
+import ctypes.wintypes
+import struct
+
+# Load Windows Winsock API directly
+ws2 = ctypes.WinDLL('ws2_32', use_last_error=True)
+
+# Constants
+AF_INET = 2
+SOCK_STREAM = 1
+IPPROTO_TCP = 6
+INVALID_SOCKET = ctypes.c_size_t(-1).value
+SOCKET_ERROR = -1
+
+
+class WSADATA(ctypes.Structure):
+    _fields_ = [
+        ('wVersion',      ctypes.c_ushort),
+        ('wHighVersion',  ctypes.c_ushort),
+        ('szDescription', ctypes.c_char * 257),
+        ('szSystemStatus',ctypes.c_char * 129),
+        ('iMaxSockets',   ctypes.c_ushort),
+        ('iMaxUdpDg',     ctypes.c_ushort),
+        ('lpVendorInfo',  ctypes.c_char_p),
+    ]
+
+
+class SOCKADDR_IN(ctypes.Structure):
+    _fields_ = [
+        ('sin_family', ctypes.c_short),
+        ('sin_port',   ctypes.c_ushort),
+        ('sin_addr',   ctypes.c_uint32),
+        ('sin_zero',   ctypes.c_char * 8),
+    ]
+
+
+def _init_winsock():
+    wsadata = WSADATA()
+    result = ws2.WSAStartup(0x0202, ctypes.byref(wsadata))
+    if result != 0:
+        raise OSError(f"WSAStartup failed: {result}")
+
+
+def _make_addr(host, port):
+    addr = SOCKADDR_IN()
+    addr.sin_family = AF_INET
+    addr.sin_port = ws2.htons(port)
+    addr.sin_addr = ws2.inet_addr(host.encode())
+    return addr
 
 
 class MySocket:
+    """Client socket — connects to a server and exchanges messages."""
+
     def __init__(self):
-        try:
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            print("[MySocket] Socket created.")
-        except socket.error as e:
-            print(f"[MySocket] Error creating socket: {e}")
-            raise
+        _init_winsock()
+        self._sock = ws2.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        if self._sock == INVALID_SOCKET:
+            raise OSError(f"socket() failed: {ctypes.get_last_error()}")
+        print("[MySocket] Socket created via Windows API.")
 
     def connect(self, host, port):
-        try:
-            self._sock.connect((host, port))
-            print(f"[MySocket] Connected to {host}:{port}")
-        except socket.error as e:
-            print(f"[MySocket] Error connecting: {e}")
-            raise
+        addr = _make_addr(host, port)
+        result = ws2.connect(self._sock, ctypes.byref(addr), ctypes.sizeof(addr))
+        if result == SOCKET_ERROR:
+            raise OSError(f"connect() failed: {ctypes.get_last_error()}")
+        print(f"[MySocket] Connected to {host}:{port}")
 
     def send(self, message):
-        try:
-            self._sock.sendall(message.encode('utf-8'))
-            print(f"[MySocket] Sent: {message}")
-        except socket.error as e:
-            print(f"[MySocket] Error sending: {e}")
-            raise
+        data = message.encode('utf-8')
+        result = ws2.send(self._sock, data, len(data), 0)
+        if result == SOCKET_ERROR:
+            raise OSError(f"send() failed: {ctypes.get_last_error()}")
+        print(f"[MySocket] Sent: {message}")
 
     def receive(self, buffer_size=1024):
-        try:
-            data = self._sock.recv(buffer_size)
-            message = data.decode('utf-8')
-            print(f"[MySocket] Received: {message}")
-            return message
-        except socket.error as e:
-            print(f"[MySocket] Error receiving: {e}")
-            raise
+        buf = ctypes.create_string_buffer(buffer_size)
+        result = ws2.recv(self._sock, buf, buffer_size, 0)
+        if result == SOCKET_ERROR:
+            raise OSError(f"recv() failed: {ctypes.get_last_error()}")
+        message = buf.raw[:result].decode('utf-8')
+        print(f"[MySocket] Received: {message}")
+        return message
 
     def close(self):
-        try:
-            self._sock.close()
-            print("[MySocket] Connection closed.")
-        except socket.error as e:
-            print(f"[MySocket] Error closing: {e}")
+        ws2.closesocket(self._sock)
+        ws2.WSACleanup()
+        print("[MySocket] Connection closed.")
 
 
 class MyServerSocket:
+    """Server socket — listens for a client and exchanges messages."""
+
     def __init__(self, host, port):
-        try:
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._sock.bind((host, port))
-            self._sock.listen(1)
-            print(f"[MyServerSocket] Listening on {host}:{port}")
-        except socket.error as e:
-            print(f"[MyServerSocket] Error starting server: {e}")
-            raise
+        _init_winsock()
+        self._sock = ws2.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        if self._sock == INVALID_SOCKET:
+            raise OSError(f"socket() failed: {ctypes.get_last_error()}")
+
+        addr = _make_addr(host, port)
+        if ws2.bind(self._sock, ctypes.byref(addr), ctypes.sizeof(addr)) == SOCKET_ERROR:
+            raise OSError(f"bind() failed: {ctypes.get_last_error()}")
+
+        if ws2.listen(self._sock, 1) == SOCKET_ERROR:
+            raise OSError(f"listen() failed: {ctypes.get_last_error()}")
+
+        print(f"[MyServerSocket] Listening on {host}:{port}")
         self._conn = None
 
     def accept(self):
-        try:
-            self._conn, addr = self._sock.accept()
-            print(f"[MyServerSocket] Client connected from {addr}")
-        except socket.error as e:
-            print(f"[MyServerSocket] Error accepting connection: {e}")
-            raise
+        addr = SOCKADDR_IN()
+        addr_len = ctypes.c_int(ctypes.sizeof(addr))
+        self._conn = ws2.accept(self._sock, ctypes.byref(addr), ctypes.byref(addr_len))
+        if self._conn == INVALID_SOCKET:
+            raise OSError(f"accept() failed: {ctypes.get_last_error()}")
+        print(f"[MyServerSocket] Client connected.")
 
     def receive(self, buffer_size=1024):
-        try:
-            data = self._conn.recv(buffer_size)
-            message = data.decode('utf-8')
-            print(f"[MyServerSocket] Received: {message}")
-            return message
-        except socket.error as e:
-            print(f"[MyServerSocket] Error receiving: {e}")
-            raise
+        buf = ctypes.create_string_buffer(buffer_size)
+        result = ws2.recv(self._conn, buf, buffer_size, 0)
+        if result == SOCKET_ERROR:
+            raise OSError(f"recv() failed: {ctypes.get_last_error()}")
+        message = buf.raw[:result].decode('utf-8')
+        print(f"[MyServerSocket] Received: {message}")
+        return message
 
     def send(self, message):
-        try:
-            self._conn.sendall(message.encode('utf-8'))
-            print(f"[MyServerSocket] Sent: {message}")
-        except socket.error as e:
-            print(f"[MyServerSocket] Error sending: {e}")
-            raise
+        data = message.encode('utf-8')
+        result = ws2.send(self._conn, data, len(data), 0)
+        if result == SOCKET_ERROR:
+            raise OSError(f"send() failed: {ctypes.get_last_error()}")
+        print(f"[MyServerSocket] Sent: {message}")
 
     def close(self):
-        try:
-            if self._conn:
-                self._conn.close()
-            self._sock.close()
-            print("[MyServerSocket] Server closed.")
-        except socket.error as e:
-            print(f"[MyServerSocket] Error closing: {e}")
+        if self._conn:
+            ws2.closesocket(self._conn)
+        ws2.closesocket(self._sock)
+        ws2.WSACleanup()
+        print("[MyServerSocket] Server closed.")
